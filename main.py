@@ -1,19 +1,24 @@
 import sys
 import math
+import time
 
 import matplotlib as plt
 import numpy as np
 
 import plot
 
-sys.setrecursionlimit(10000)
+sys.setrecursionlimit(100000)
+startTime = time.time()
 
-learning_rate = 1e-5
-delta = 1e-3
+initial_learning_rate = 5e-5
+learning_rate = 5e-5
+active_learning_rate = 0;
+delta = 1e-5
 
 #constants
+c= 300000
 n = 3
-expansion_precision = 8 #number of digits
+expansion_precision = 9 #number of digits
 
 
 circle_positions = np.random.random((n,2))
@@ -33,19 +38,24 @@ def check_overlap(radii, positions):
 
   return min_distances < 0
 
-def expand_circles(radii, positions = circle_positions, delta=0.1):
-  if delta < math.pow(10, -expansion_precision): 
-    return radii
-  elif(np.all(check_overlap(radii + delta, positions))):
-    return expand_circles(radii, positions, delta=delta/10)
-  else:
-    return expand_circles(radii + delta * np.where(check_overlap(radii + delta, positions), 0, 1), positions)
+def expand_circles(radii, positions = circle_positions, expansion_delta=0.1):
+  while expansion_delta > math.pow(10, -expansion_precision):
+    overlaps = check_overlap(radii + expansion_delta, positions)
+    if(np.all(overlaps)):
+      expansion_delta/=10
+    else:
+      radii += expansion_delta * np.where(overlaps, 0, 1)
+  return radii
 
 
-def get_area(radii):
-  return np.sum(math.pi * radii ** 2)
+def get_sum(radii):
+  return np.sum(radii)
 
-def get_gradients(delta_range):
+def get_gradients(delta_range, counter=0):
+  global learning_rate, active_learning_rate, circle_radii
+  active_learning_rate = learning_rate * math.pow(0.999, max(0, counter-20))
+  circle_radii -= 0 if counter < 100 else 1e-5
+
   radius_deltas = np.random.uniform(-delta_range, delta_range, (n))
   position_deltas = np.random.uniform(-delta_range, delta_range, (n,2))
 
@@ -55,44 +65,64 @@ def get_gradients(delta_range):
   radius_gradient = np.zeros(n)
   position_gradient = np.zeros((n,2))
 
-  point_area = get_area(circle_radii)
+  point_value = get_sum(expand_circles(circle_radii, circle_positions))
 
   for i in range(n):
     test_radii[i] += radius_deltas[i]
-    radius_gradient[i] = (get_area(test_radii) - point_area) / radius_deltas[i]
+    radius_gradient[i] = (get_sum(test_radii) - point_value) / radius_deltas[i]
     test_radii[i] -= radius_deltas[i]
 
-    test_positions[i][0] += position_deltas[i][0]
-    position_gradient[i][0] = (get_area(expand_circles(test_radii, test_positions)) - point_area) / position_deltas[i][0]
+    test_positions[i][0] += position_deltas[i][0]/3
+    position_gradient[i][0] += (get_sum(expand_circles(test_radii, test_positions)) - point_value) / (3*position_deltas[i][0])
     test_positions[i][0] -= position_deltas[i][0]
 
     test_positions[i][1] += position_deltas[i][1]
-    position_gradient[i][1] = (get_area(expand_circles(test_radii, test_positions)) - point_area) / position_deltas[i][1]
+    position_gradient[i][1] = (get_sum(expand_circles(test_radii, test_positions)) - point_value) / position_deltas[i][1]
     test_positions[i][1] -= position_deltas[i][1]
-  # print(position_gradient)
-  # print(radius_gradient)
-  if(np.any(check_overlap(circle_radii + radius_gradient * learning_rate, circle_positions + position_gradient * learning_rate))): return get_gradients(delta_range)
-  return radius_gradient, position_gradient
+  
+  clip_factor = 100*initial_learning_rate/learning_rate
+  radius_gradient = np.clip(radius_gradient, -clip_factor, clip_factor)
+  position_gradient = np.clip(position_gradient, -clip_factor, clip_factor)
 
-circle_radii = expand_circles(circle_radii)
+  if(np.any(check_overlap(circle_radii + radius_gradient * active_learning_rate, circle_positions + position_gradient * active_learning_rate))): return get_gradients(delta_range*0.99, counter+1)
+  if(get_sum(expand_circles(circle_radii + radius_gradient * active_learning_rate, circle_positions + position_gradient * active_learning_rate)) - point_value < 0): return get_gradients(delta_range*0.99, 0)
+  
+  return radius_gradient, position_gradient, counter
 
-for i in range(10000):
-  radius_gradient, position_gradient = get_gradients(delta) 
-  circle_radii += radius_gradient * learning_rate
-  circle_positions +=  position_gradient * learning_rate
-  circle_radii = expand_circles(circle_radii)
-  print(get_area(circle_radii))
+total_count = 0
+
+while get_sum(circle_radii) < 0.70:
+  circle_positions = np.random.random((n,2))
+  circle_radii = expand_circles(np.zeros(n), circle_positions)
+
+plot.display(circle_positions, circle_radii)
+
+last_sum = 0
+for i in range(c):
+  radius_gradient, position_gradient, counter = get_gradients(delta) 
+
+  sum_before = get_sum(circle_radii)
+  circle_radii_before = circle_radii.copy()
+  circle_positions_before = circle_positions.copy()
+
+  circle_radii += radius_gradient * active_learning_rate
+  circle_positions +=  position_gradient * active_learning_rate
+  circle_radii = expand_circles(circle_radii, circle_positions)
+
+  if(i % 20==0):
+    sum = get_sum(circle_radii)
+    print(f'i: {i}')
+    print(f'sum: {sum}')
+    print(f'delta sum: {sum-last_sum}')
+    last_sum=sum
+    print(f'{time.time() - startTime} seconds elapsed')
 
 
+  total_count += counter
+  # if(counter > 10): learning_rate = learning_rate*0.95 + active_learning_rate * 0.05
+  if i%500 == 0: plot.display(circle_positions, circle_radii)
 
-
-
-
-      
-      
-
-
-
-
-
-
+print(f'average get gradient iterations: {total_count/c}')
+print(f'{time.time() - startTime} seconds elapsed')
+print(get_sum(circle_radii))
+plot.display(circle_positions, circle_radii)
